@@ -78,6 +78,7 @@ class DoodStreamExtractor:
                 window.chrome = window.chrome || { runtime: {} };
                 """
             )
+
             page = await context.new_page()
             pass_path: str | None = None
             token: str | None = None
@@ -107,13 +108,36 @@ class DoodStreamExtractor:
 
             page.on("response", handle_response)
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(12000)
+
+            click_selectors = [
+                ".captcha_l",
+                "#video_player",
+                ".videoplayer",
+                "button",
+            ]
+            for selector in click_selectors:
+                if pass_path and token:
+                    break
+                try:
+                    locator = page.locator(selector).first
+                    if await locator.count():
+                        await locator.click(timeout=3000)
+                        await page.wait_for_timeout(1500)
+                except Exception:
+                    continue
+
+            for _ in range(8):
+                if pass_path and token:
+                    break
+                await page.wait_for_timeout(1500)
+
             html = await page.content()
             final_url = page.url
             if not pass_path or not token:
                 html_pass_path, html_token = self._extract_pass_and_token(html)
                 pass_path = pass_path or html_pass_path
                 token = token or html_token
+
             await context.close()
             await browser.close()
             return pass_path, token, pass_body, final_url, html
@@ -139,19 +163,21 @@ class DoodStreamExtractor:
 
         pass_path, token = self._extract_pass_and_token(text)
         pass_body = None
-        if not pass_path or not token:
-            logger.info("DoodStream: direct HTML parse failed, trying browser fallback")
-            pass_path, token, pass_body, response_url, text = await self._fetch_player_data_via_browser(url)
 
         if not pass_path or not token:
-            snippet = (text or "")[:500].replace("\n", " ").replace("\r", " ")
+            logger.info("DoodStream: direct HTML parse failed, trying browser fallback")
+            try:
+                pass_path, token, pass_body, response_url, text = await self._fetch_player_data_via_browser(url)
+            except Exception as exc:
+                logger.warning("DoodStream: browser fallback failed: %s", exc)
+
+        if not pass_path or not token:
             logger.warning(
-                "DoodStream debug: response_url=%s pass_path=%s token_found=%s pass_body_found=%s html_snippet=%s",
+                "DoodStream extraction failed after browser fallback: response_url=%s pass_path=%s token_found=%s pass_body_found=%s",
                 response_url,
                 bool(pass_path),
                 bool(token),
                 bool(pass_body),
-                snippet,
             )
             raise ExtractorError("Failed to extract URL pattern")
 
